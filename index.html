@@ -334,6 +334,13 @@
   }
   .task-row:hover { background: var(--surface-2); }
   .task-row.dragging { opacity: 0.4; }
+  .task-row.completed { opacity: 0.72; }
+  .task-row.overdue { background: #fff1ec; }
+  .task-row.due-today { background: #fff8df; }
+  .task-row.due-tomorrow { background: #eef7f1; }
+  .task-row.blocked { box-shadow: inset 3px 0 0 var(--danger); }
+  .task-row.high-priority { box-shadow: inset 3px 0 0 #b5472b; }
+  .task-row.blocked.high-priority { box-shadow: inset 3px 0 0 var(--danger), inset 6px 0 0 #9a7b1e; }
   .grip {
     color: var(--text-3);
     flex-shrink: 0;
@@ -363,6 +370,30 @@
     color: var(--text-3);
     text-decoration: line-through;
   }
+  .task-content {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+    min-width: 0;
+  }
+  .task-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-2);
+  }
+  .task-pill {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 7px;
+    background: var(--surface);
+    line-height: 1.5;
+  }
+  .task-pill.warning { border-color: #d7b23f; background: #fff8df; color: #765d0d; }
+  .task-pill.danger { border-color: #e1a28f; background: var(--danger-bg); color: var(--danger); }
+  .task-pill.success { border-color: #a8c9b3; background: #eef7f1; color: #2f6846; }
   .task-edit-input {
     font-size: 14px;
     flex: 1;
@@ -500,6 +531,43 @@
     margin-top: 14px;
   }
   .modal-actions .btn-sm { padding: 7px 12px; }
+  .task-form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 12px;
+  }
+  .task-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .task-form label.full { grid-column: 1 / -1; }
+  .task-form input,
+  .task-form select,
+  .task-form textarea {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 8px 9px;
+  }
+  .task-form textarea {
+    min-height: 92px;
+    resize: vertical;
+  }
+  .task-form input:focus,
+  .task-form select:focus,
+  .task-form textarea:focus {
+    outline: none;
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.04);
+  }
   .hidden-input { display: none; }
   @media (max-width: 640px) {
     body { padding: 12px; }
@@ -508,6 +576,7 @@
     .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; overflow-x: auto; }
     .sidebar-label { display: none; }
     .main { padding: 16px; }
+    .task-form { grid-template-columns: 1fr; }
   }
   svg { display: block; }
 </style>
@@ -535,7 +604,7 @@
 (function () {
   "use strict";
 
-  var SCHEMA_VERSION = 1;
+  var SCHEMA_VERSION = 2;
   var STORAGE_KEY = "projects-data-v1";
   var APP_NAME = "Focus";
   var LOCAL_BACKUP_PREFIX = "focus-local-backup-";
@@ -546,7 +615,8 @@
     projectNameMin: 1,
     projectNameMax: 80,
     taskTextMin: 1,
-    taskTextMax: 300
+    taskTextMax: 200,
+    taskNotesMax: 2000
   };
   var LANE_NAMES = {
     urgente: "Urgente",
@@ -563,6 +633,24 @@
   ];
 
   var PROJECT_COLORS = ["#B5472B", "#9A7B1E", "#3C6E52", "#3A5A8C", "#6B4C8A", "#5B6470"];
+  var TASK_STATUSES = [
+    { value: "pendiente", label: "Pendiente" },
+    { value: "en_progreso", label: "En progreso" },
+    { value: "bloqueada", label: "Bloqueada" },
+    { value: "completada", label: "Completada" }
+  ];
+  var TASK_PRIORITIES = [
+    { value: "baja", label: "Baja" },
+    { value: "media", label: "Media" },
+    { value: "alta", label: "Alta" }
+  ];
+  var TASK_TYPES = [
+    { value: "trabajo", label: "Trabajo" },
+    { value: "personal", label: "Personal" },
+    { value: "reunion", label: "Reuni\u00f3n" },
+    { value: "investigacion", label: "Investigaci\u00f3n" },
+    { value: "otro", label: "Otro" }
+  ];
 
   // ---------- icons (inline SVG, no external deps) ----------
   function svgWrap(inner, size, color) {
@@ -635,7 +723,8 @@
     storageWarning: null,
     settingsOpen: false,
     modal: null,
-    pendingImport: null
+    pendingImport: null,
+    taskForm: null
   };
 
   function generateId() {
@@ -707,11 +796,118 @@
     return isNaN(parsed) ? null : new Date(parsed).toISOString();
   }
 
+  function optionExists(options, value) {
+    return options.some(function (item) { return item.value === value; });
+  }
+
+  function normalizeStatus(status, done) {
+    if (status === "completada") return "completada";
+    if (done) return "completada";
+    if (status === "bloqueada" || status === "en_progreso") return status;
+    return "pendiente";
+  }
+
+  function normalizePriority(priority) {
+    return optionExists(TASK_PRIORITIES, priority) ? priority : "media";
+  }
+
+  function normalizeTaskType(taskType) {
+    return optionExists(TASK_TYPES, taskType) ? taskType : "otro";
+  }
+
+  function normalizeDateOnly(value) {
+    if (value === null || value === undefined || value === "") return null;
+    if (typeof value !== "string") return null;
+    var match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!match) return null;
+    var d = new Date(match[1] + "-" + match[2] + "-" + match[3] + "T00:00:00");
+    if (isNaN(d.getTime())) return null;
+    if (d.getFullYear() !== Number(match[1]) || d.getMonth() + 1 !== Number(match[2]) || d.getDate() !== Number(match[3])) return null;
+    return match[1] + "-" + match[2] + "-" + match[3];
+  }
+
+  function isTaskCompleted(task) {
+    return task.status === "completada" || task.done === true;
+  }
+
+  function isTaskDeleted(task) {
+    return !!task.deletedAt;
+  }
+
+  function todayDateOnly() {
+    var d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+
+  function parseDateOnly(value) {
+    var normalized = normalizeDateOnly(value);
+    if (!normalized) return null;
+    var d = new Date(normalized + "T00:00:00");
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  function daysUntil(value) {
+    var d = parseDateOnly(value);
+    if (!d) return null;
+    return Math.round((d.getTime() - todayDateOnly().getTime()) / 86400000);
+  }
+
   function normalizeLane(value) {
     for (var i = 0; i < LANES.length; i++) {
       if (LANES[i].key === value) return value;
     }
     return LANES[0].key;
+  }
+
+  function getTaskPosition(projectTasks, lane, task, fallbackIndex) {
+    if (typeof task.position === "number" && task.position >= 0) return task.position;
+    var position = 0;
+    for (var i = 0; i < fallbackIndex; i++) {
+      var previous = projectTasks[i];
+      if (previous && normalizeLane(previous.lane) === lane && !previous.deletedAt) position++;
+    }
+    return position;
+  }
+
+  function normalizeTask(task, taskIndex, projectTasks) {
+    if (!task || typeof task !== "object" || Array.isArray(task)) {
+      throw new Error("Hay una tarea con formato invalido.");
+    }
+    var createdAt = typeof task.createdAt === "number" ? task.createdAt : Date.now();
+    var done = !!task.done;
+    var status = normalizeStatus(task.status, done);
+    if (status === "completada") done = true;
+    if (status === "bloqueada" || status === "en_progreso") done = false;
+    var lane = normalizeLane(task.lane);
+    var estimate = task.estimateMinutes;
+    if (estimate === "" || estimate === undefined || estimate === null || isNaN(Number(estimate)) || Number(estimate) < 0) {
+      estimate = null;
+    } else {
+      estimate = Math.round(Number(estimate));
+    }
+    var completedAt = task.completedAt || null;
+    if (done && !completedAt) completedAt = createdAt;
+
+    return {
+      id: sanitizeText(task.id || generateId(), 120) || generateId(),
+      text: sanitizeText(task.text || task.title || ("Tarea " + (taskIndex + 1)), VALIDATION_LIMITS.taskTextMax) || ("Tarea " + (taskIndex + 1)),
+      lane: lane,
+      done: done,
+      createdAt: createdAt,
+      status: status,
+      priority: normalizePriority(task.priority),
+      dueDate: normalizeDateOnly(task.dueDate),
+      scheduledDate: normalizeDateOnly(task.scheduledDate),
+      estimateMinutes: estimate,
+      taskType: normalizeTaskType(task.taskType),
+      notes: sanitizeText(task.notes || "", VALIDATION_LIMITS.taskNotesMax),
+      externalUrl: typeof task.externalUrl === "string" ? task.externalUrl.trim() : "",
+      position: getTaskPosition(projectTasks, lane, task, taskIndex),
+      updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : createdAt,
+      completedAt: completedAt,
+      deletedAt: task.deletedAt || null
+    };
   }
 
   function normalizeProjects(projects) {
@@ -730,19 +926,7 @@
         name: name || ("Proyecto " + (projectIndex + 1)),
         color: color,
         createdAt: typeof project.createdAt === "number" ? project.createdAt : Date.now(),
-        tasks: tasks.map(function (task, taskIndex) {
-          if (!task || typeof task !== "object" || Array.isArray(task)) {
-            throw new Error("Hay una tarea con formato invalido.");
-          }
-          var text = sanitizeText(task.text || ("Tarea " + (taskIndex + 1)), VALIDATION_LIMITS.taskTextMax);
-          return {
-            id: sanitizeText(task.id || generateId(), 120) || generateId(),
-            text: text || ("Tarea " + (taskIndex + 1)),
-            lane: normalizeLane(task.lane),
-            done: !!task.done,
-            createdAt: typeof task.createdAt === "number" ? task.createdAt : Date.now()
-          };
-        })
+        tasks: tasks.map(function (task, taskIndex) { return normalizeTask(task, taskIndex, tasks); })
       };
     });
   }
@@ -931,7 +1115,7 @@
   // ---------- backup and import ----------
   function countTasks(projects) {
     return projects.reduce(function (sum, project) {
-      return sum + (Array.isArray(project.tasks) ? project.tasks.length : 0);
+      return sum + (Array.isArray(project.tasks) ? project.tasks.filter(function (task) { return !isTaskDeleted(task); }).length : 0);
     }, 0);
   }
 
@@ -1143,12 +1327,43 @@
     render();
   }
 
+  function nextTaskPosition(tasks, lane) {
+    var laneTasks = tasks.filter(function (task) { return task.lane === lane && !isTaskDeleted(task); });
+    if (laneTasks.length === 0) return 0;
+    return Math.max.apply(null, laneTasks.map(function (task) { return typeof task.position === "number" ? task.position : 0; })) + 1;
+  }
+
+  function newTask(text, lane) {
+    var now = Date.now();
+    return {
+      id: generateId(),
+      text: text,
+      lane: lane,
+      done: false,
+      createdAt: now,
+      status: "pendiente",
+      priority: "media",
+      dueDate: null,
+      scheduledDate: null,
+      estimateMinutes: null,
+      taskType: "otro",
+      notes: "",
+      externalUrl: "",
+      position: 0,
+      updatedAt: now,
+      completedAt: null,
+      deletedAt: null
+    };
+  }
+
   function addTask(lane, text) {
     var trimmed = sanitizeText(text, VALIDATION_LIMITS.taskTextMax);
     var active = getActiveProject();
     if (trimmed.length < VALIDATION_LIMITS.taskTextMin || !active) return;
     updateProject(active.id, function (p) {
-      p.tasks.push({ id: generateId(), text: trimmed, lane: lane, done: false, createdAt: Date.now() });
+      var task = newTask(trimmed, lane);
+      task.position = nextTaskPosition(p.tasks, lane);
+      p.tasks.push(task);
       return p;
     });
     var input = document.querySelector('.add-task-row input[data-lane="' + lane + '"]');
@@ -1160,7 +1375,14 @@
     if (!active) return;
     updateProject(active.id, function (p) {
       p.tasks = p.tasks.map(function (t) {
-        if (t.id === taskId) t.done = !t.done;
+        if (t.id === taskId) {
+          var now = Date.now();
+          var nextDone = !isTaskCompleted(t);
+          t.done = nextDone;
+          t.status = nextDone ? "completada" : "pendiente";
+          t.completedAt = nextDone ? (t.completedAt || now) : null;
+          t.updatedAt = now;
+        }
         return t;
       });
       return p;
@@ -1171,7 +1393,13 @@
     var active = getActiveProject();
     if (!active) return;
     updateProject(active.id, function (p) {
-      p.tasks = p.tasks.filter(function (t) { return t.id !== taskId; });
+      p.tasks = p.tasks.map(function (t) {
+        if (t.id === taskId) {
+          t.deletedAt = Date.now();
+          t.updatedAt = t.deletedAt;
+        }
+        return t;
+      });
       return p;
     });
   }
@@ -1181,7 +1409,11 @@
     if (!active) return;
     updateProject(active.id, function (p) {
       p.tasks = p.tasks.map(function (t) {
-        if (t.id === taskId) t.lane = newLane;
+        if (t.id === taskId) {
+          t.lane = newLane;
+          t.position = nextTaskPosition(p.tasks, newLane);
+          t.updatedAt = Date.now();
+        }
         return t;
       });
       return p;
@@ -1195,7 +1427,137 @@
     if (trimmed.length < VALIDATION_LIMITS.taskTextMin || !active) { render(); return; }
     updateProject(active.id, function (p) {
       p.tasks = p.tasks.map(function (t) {
-        if (t.id === taskId) t.text = trimmed;
+        if (t.id === taskId) {
+          t.text = trimmed;
+          t.updatedAt = Date.now();
+        }
+        return t;
+      });
+      return p;
+    });
+  }
+
+  function findTask(taskId) {
+    var active = getActiveProject();
+    if (!active) return null;
+    for (var i = 0; i < active.tasks.length; i++) {
+      if (active.tasks[i].id === taskId && !isTaskDeleted(active.tasks[i])) return active.tasks[i];
+    }
+    return null;
+  }
+
+  function openTaskForm(taskId) {
+    var task = findTask(taskId);
+    if (!task) return;
+    state.taskForm = { mode: "edit", taskId: taskId, error: null };
+    state.modal = { type: "task-form" };
+    render();
+  }
+
+  function openCreateTaskForm(lane) {
+    state.taskForm = { mode: "create", lane: normalizeLane(lane), error: null };
+    state.modal = { type: "task-form" };
+    render();
+  }
+
+  function isValidUrl(value) {
+    if (!value) return true;
+    try {
+      var parsed = new URL(value);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function readTaskForm() {
+    var title = sanitizeText((document.getElementById("taskFormTitle") || {}).value || "", VALIDATION_LIMITS.taskTextMax);
+    var lane = normalizeLane((document.getElementById("taskFormLane") || {}).value);
+    var status = normalizeStatus((document.getElementById("taskFormStatus") || {}).value, false);
+    var priority = normalizePriority((document.getElementById("taskFormPriority") || {}).value);
+    var dueDateValue = (document.getElementById("taskFormDueDate") || {}).value || "";
+    var scheduledDateValue = (document.getElementById("taskFormScheduledDate") || {}).value || "";
+    var taskType = normalizeTaskType((document.getElementById("taskFormType") || {}).value);
+    var estimateValue = (document.getElementById("taskFormEstimate") || {}).value;
+    var notes = String((document.getElementById("taskFormNotes") || {}).value || "").slice(0, VALIDATION_LIMITS.taskNotesMax);
+    var externalUrl = String((document.getElementById("taskFormUrl") || {}).value || "").trim();
+
+    if (title.length < VALIDATION_LIMITS.taskTextMin) throw new Error("El t\u00edtulo es obligatorio.");
+    if (title.length > VALIDATION_LIMITS.taskTextMax) throw new Error("El t\u00edtulo no puede superar 200 caracteres.");
+    if (notes.length > VALIDATION_LIMITS.taskNotesMax) throw new Error("Las notas no pueden superar 2.000 caracteres.");
+    if (dueDateValue && !normalizeDateOnly(dueDateValue)) throw new Error("La fecha l\u00edmite no es v\u00e1lida.");
+    if (scheduledDateValue && !normalizeDateOnly(scheduledDateValue)) throw new Error("La fecha planificada no es v\u00e1lida.");
+    if (estimateValue !== "" && (isNaN(Number(estimateValue)) || Number(estimateValue) < 0)) throw new Error("La estimaci\u00f3n debe ser mayor o igual a cero.");
+    if (!isValidUrl(externalUrl)) throw new Error("El enlace externo debe ser una URL http(s) v\u00e1lida o estar vac\u00edo.");
+    if (status === "completada") {
+      // Estado completado gana sobre estados operativos.
+    }
+
+    return {
+      text: title,
+      lane: lane,
+      status: status,
+      priority: priority,
+      dueDate: normalizeDateOnly(dueDateValue),
+      scheduledDate: normalizeDateOnly(scheduledDateValue),
+      taskType: taskType,
+      estimateMinutes: estimateValue === "" ? null : Math.round(Number(estimateValue)),
+      notes: notes,
+      externalUrl: externalUrl
+    };
+  }
+
+  function saveTaskForm() {
+    if (!state.taskForm) return;
+    var active = getActiveProject();
+    if (!active) return;
+    var taskId = state.taskForm.taskId;
+    var mode = state.taskForm.mode;
+    var values;
+    try {
+      values = readTaskForm();
+    } catch (e) {
+      state.taskForm.error = e.message;
+      render();
+      return;
+    }
+    state.taskForm = null;
+    state.modal = null;
+    updateProject(active.id, function (p) {
+      if (mode === "create") {
+        var created = newTask(values.text, values.lane);
+        created.status = values.status;
+        created.done = values.status === "completada";
+        created.completedAt = created.done ? Date.now() : null;
+        created.priority = values.priority;
+        created.dueDate = values.dueDate;
+        created.scheduledDate = values.scheduledDate;
+        created.taskType = values.taskType;
+        created.estimateMinutes = values.estimateMinutes;
+        created.notes = values.notes;
+        created.externalUrl = values.externalUrl;
+        created.position = nextTaskPosition(p.tasks, values.lane);
+        created.updatedAt = Date.now();
+        p.tasks.push(created);
+        return p;
+      }
+      p.tasks = p.tasks.map(function (t) {
+        if (t.id !== taskId) return t;
+        var wasDone = isTaskCompleted(t);
+        var now = Date.now();
+        t.text = values.text;
+        t.lane = values.lane;
+        t.status = values.status === "completada" ? "completada" : values.status;
+        t.done = t.status === "completada";
+        t.completedAt = t.done ? (wasDone ? t.completedAt || now : now) : null;
+        t.priority = values.priority;
+        t.dueDate = values.dueDate;
+        t.scheduledDate = values.scheduledDate;
+        t.taskType = values.taskType;
+        t.estimateMinutes = values.estimateMinutes;
+        t.notes = values.notes;
+        t.externalUrl = values.externalUrl;
+        t.updatedAt = now;
         return t;
       });
       return p;
@@ -1233,6 +1595,91 @@
         '</div>';
     }
     tools.innerHTML = html;
+  }
+
+  function optionLabel(options, value) {
+    for (var i = 0; i < options.length; i++) {
+      if (options[i].value === value) return options[i].label;
+    }
+    return value || "";
+  }
+
+  function formatDateOnly(value) {
+    var d = parseDateOnly(value);
+    if (!d) return "";
+    return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" });
+  }
+
+  function taskDueKind(task) {
+    if (!task.dueDate || isTaskCompleted(task)) return "";
+    var diff = daysUntil(task.dueDate);
+    if (diff === null) return "";
+    if (diff < 0) return "overdue";
+    if (diff === 0) return "due-today";
+    if (diff === 1) return "due-tomorrow";
+    return "";
+  }
+
+  function taskVisualClasses(task) {
+    var classes = [];
+    var dueKind = taskDueKind(task);
+    if (dueKind) classes.push(dueKind);
+    if (task.status === "bloqueada" && !isTaskCompleted(task)) classes.push("blocked");
+    if (task.priority === "alta" && !isTaskCompleted(task)) classes.push("high-priority");
+    if (isTaskCompleted(task)) classes.push("completed");
+    return classes.join(" ");
+  }
+
+  function taskMetaHtml(task) {
+    var meta = [];
+    var dueKind = taskDueKind(task);
+    if (task.priority) {
+      meta.push({ text: "Prioridad " + optionLabel(TASK_PRIORITIES, task.priority), cls: task.priority === "alta" ? "danger" : "" });
+    }
+    if (task.status) {
+      meta.push({ text: optionLabel(TASK_STATUSES, task.status), cls: task.status === "bloqueada" ? "danger" : (task.status === "completada" ? "success" : "") });
+    }
+    if (task.dueDate) {
+      var dueLabel = dueKind === "overdue" ? "Vencida" : (dueKind === "due-today" ? "Vence hoy" : (dueKind === "due-tomorrow" ? "Vence ma\u00f1ana" : "Vence"));
+      meta.push({ text: dueLabel + " " + formatDateOnly(task.dueDate), cls: dueKind === "overdue" ? "danger" : (dueKind ? "warning" : "") });
+    }
+    if (task.scheduledDate) meta.push({ text: "Plan " + formatDateOnly(task.scheduledDate), cls: "" });
+    if (task.taskType) meta.push({ text: optionLabel(TASK_TYPES, task.taskType), cls: "" });
+    if (meta.length === 0) return "";
+    return '<div class="task-meta">' + meta.map(function (item) {
+      return '<span class="task-pill' + (item.cls ? ' ' + item.cls : '') + '">' + escapeHtml(item.text) + '</span>';
+    }).join("") + '</div>';
+  }
+
+  function optionsHtml(options, selected) {
+    return options.map(function (item) {
+      return '<option value="' + item.value + '"' + (item.value === selected ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
+    }).join("");
+  }
+
+  function renderTaskFormHtml() {
+    var isCreate = state.taskForm && state.taskForm.mode === "create";
+    var task = isCreate ? newTask("", state.taskForm.lane) : (state.taskForm ? findTask(state.taskForm.taskId) : null);
+    if (!task) return '<h2>Tarea no disponible</h2><p>No se pudo encontrar la tarea seleccionada.</p><div class="modal-actions"><button class="btn-sm" data-action="close-modal">Cerrar</button></div>';
+    return '<h2>' + (isCreate ? 'Crear tarea' : 'Editar detalle') + '</h2>' +
+      '<p>Los cambios se guardan localmente y mantienen compatibilidad con el modelo anterior.</p>' +
+      (state.taskForm.error ? '<div class="modal-error">' + escapeHtml(state.taskForm.error) + '</div>' : '') +
+      '<div class="task-form">' +
+      '<label class="full">T\u00edtulo<input id="taskFormTitle" type="text" maxlength="200" value="' + escapeHtml(task.text) + '"></label>' +
+      '<label>Carril<select id="taskFormLane">' + LANES.map(function (lane) { return '<option value="' + lane.key + '"' + (lane.key === task.lane ? ' selected' : '') + '>' + escapeHtml(lane.label) + '</option>'; }).join("") + '</select></label>' +
+      '<label>Estado<select id="taskFormStatus">' + optionsHtml(TASK_STATUSES, task.status) + '</select></label>' +
+      '<label>Prioridad<select id="taskFormPriority">' + optionsHtml(TASK_PRIORITIES, task.priority) + '</select></label>' +
+      '<label>Fecha l\u00edmite<input id="taskFormDueDate" type="date" value="' + escapeHtml(task.dueDate || "") + '"></label>' +
+      '<label>Fecha planificada<input id="taskFormScheduledDate" type="date" value="' + escapeHtml(task.scheduledDate || "") + '"></label>' +
+      '<label>Tipo de tarea<select id="taskFormType">' + optionsHtml(TASK_TYPES, task.taskType) + '</select></label>' +
+      '<label>Estimaci\u00f3n minutos<input id="taskFormEstimate" type="number" min="0" step="1" value="' + (task.estimateMinutes === null || task.estimateMinutes === undefined ? "" : escapeHtml(String(task.estimateMinutes))) + '"></label>' +
+      '<label class="full">Notas<textarea id="taskFormNotes" maxlength="2000">' + escapeHtml(task.notes || "") + '</textarea></label>' +
+      '<label class="full">Enlace externo<input id="taskFormUrl" type="url" value="' + escapeHtml(task.externalUrl || "") + '"></label>' +
+      '</div>' +
+      '<div class="modal-actions">' +
+      '<button class="btn-sm" data-action="close-modal">Cancelar</button>' +
+      '<button class="btn-sm" data-action="save-task-form">' + (isCreate ? 'Crear tarea' : 'Guardar detalle') + '</button>' +
+      '</div>';
   }
 
   function summaryHtml(summary) {
@@ -1295,6 +1742,8 @@
         '<p>Focus mantiene localStorage como persistencia principal y conserva los ultimos respaldos locales separados.</p>' +
         storageInfoHtml() +
         '<div class="modal-actions"><button class="btn-sm" data-action="close-modal">Cerrar</button></div>';
+    } else if (state.modal.type === "task-form") {
+      html += renderTaskFormHtml();
     } else if (state.modal.type === "message") {
       html += '<h2>' + escapeHtml(state.modal.title) + '</h2>' +
         '<p>' + escapeHtml(state.modal.message) + '</p>' +
@@ -1310,8 +1759,9 @@
     var html = '<div class="sidebar-label">Proyectos</div>';
 
     state.projects.forEach(function (p) {
-      var total = p.tasks.length;
-      var done = p.tasks.filter(function (t) { return t.done; }).length;
+      var visibleTasks = p.tasks.filter(function (t) { return !isTaskDeleted(t); });
+      var total = visibleTasks.length;
+      var done = visibleTasks.filter(isTaskCompleted).length;
       var isActive = p.id === state.activeProjectId;
       html += '<button class="project-item' + (isActive ? ' active' : '') + '" data-action="select-project" data-id="' + p.id + '">' +
         '<span class="dot" style="background:' + p.color + '"></span>' +
@@ -1354,8 +1804,9 @@
       return;
     }
 
-    var total = active.tasks.length;
-    var doneCount = active.tasks.filter(function (t) { return t.done; }).length;
+    var visibleActiveTasks = active.tasks.filter(function (t) { return !isTaskDeleted(t); });
+    var total = visibleActiveTasks.length;
+    var doneCount = visibleActiveTasks.filter(isTaskCompleted).length;
     var pct = total ? Math.round((doneCount / total) * 100) : 0;
 
     var html = '<div class="project-header">' +
@@ -1384,9 +1835,11 @@
       '</div>';
 
     LANES.forEach(function (lane) {
-      var tasks = active.tasks.filter(function (t) { return t.lane === lane.key; });
+      var tasks = visibleActiveTasks.filter(function (t) { return t.lane === lane.key; }).sort(function (a, b) {
+        return (typeof a.position === "number" ? a.position : 0) - (typeof b.position === "number" ? b.position : 0);
+      });
       var collapsed = !!state.collapsedLanes[lane.key];
-      var pending = tasks.filter(function (t) { return !t.done; }).length;
+      var pending = tasks.filter(function (t) { return !isTaskCompleted(t); }).length;
       var statusText = pending > 0 ? (pending + ' pendiente' + (pending > 1 ? 's' : '')) : (tasks.length > 0 ? 'completas' : 'vac\u00edo');
 
       html += '<div class="lane" data-lane="' + lane.key + '">' +
@@ -1404,19 +1857,24 @@
         }
         html += '<div class="task-list">';
         tasks.forEach(function (task) {
-          html += '<div class="task-row" draggable="true" data-task-id="' + task.id + '">' +
+          var taskDone = isTaskCompleted(task);
+          html += '<div class="task-row ' + taskVisualClasses(task) + '" draggable="true" data-task-id="' + task.id + '">' +
             '<span class="grip">' + iconGrip(13) + '</span>' +
-            '<button class="checkbox" data-action="toggle-task" data-id="' + task.id + '" style="border-color:' + (task.done ? active.color : '') + ';background:' + (task.done ? active.color : 'transparent') + '" aria-label="' + (task.done ? 'Marcar como pendiente' : 'Marcar como completada') + '">' +
-            (task.done ? iconCheck(11, "white") : '') +
+            '<button class="checkbox" data-action="toggle-task" data-id="' + task.id + '" style="border-color:' + (taskDone ? active.color : '') + ';background:' + (taskDone ? active.color : 'transparent') + '" aria-label="' + (taskDone ? 'Marcar como pendiente' : 'Marcar como completada') + '">' +
+            (taskDone ? iconCheck(11, "white") : '') +
             '</button>';
 
           if (state.editingTask === task.id) {
             html += '<input type="text" class="task-edit-input" id="taskEditInput" value="' + escapeHtml(task.text) + '" data-id="' + task.id + '">';
           } else {
-            html += '<span class="task-text' + (task.done ? ' done' : '') + '" data-action="edit-task" data-id="' + task.id + '">' + escapeHtml(task.text) + '</span>';
+            html += '<div class="task-content">' +
+              '<span class="task-text' + (taskDone ? ' done' : '') + '" data-action="edit-task" data-id="' + task.id + '">' + escapeHtml(task.text) + '</span>' +
+              taskMetaHtml(task) +
+              '</div>';
           }
 
-          html += '<button class="task-action-btn" data-action="edit-task" data-id="' + task.id + '" aria-label="Editar tarea">' + iconPencil(12) + '</button>' +
+          html += '<button class="task-action-btn" data-action="open-task-detail" data-id="' + task.id + '" aria-label="Editar detalle" title="Editar detalle">' + iconInfo(13) + '</button>' +
+            '<button class="task-action-btn" data-action="edit-task" data-id="' + task.id + '" aria-label="Editar tarea">' + iconPencil(12) + '</button>' +
             '<button class="task-action-btn" data-action="delete-task" data-id="' + task.id + '" aria-label="Eliminar tarea">' + iconX(13) + '</button>' +
             '</div>';
         });
@@ -1425,6 +1883,7 @@
         html += '<div class="add-task-row">' +
           '<input type="text" placeholder="Agregar tarea..." data-lane="' + lane.key + '" autocomplete="off">' +
           '<button data-action="add-task" data-lane="' + lane.key + '" aria-label="Agregar tarea">' + iconPlus(14) + '</button>' +
+          '<button data-action="open-create-task-detail" data-lane="' + lane.key + '" aria-label="Crear tarea detallada" title="Crear tarea detallada">' + iconInfo(14) + '</button>' +
           '</div>';
 
         html += '</div>';
@@ -1534,6 +1993,7 @@
       case "close-modal":
         state.modal = null;
         state.pendingImport = null;
+        state.taskForm = null;
         render();
         break;
       case "confirm-import-replace":
@@ -1587,6 +2047,15 @@
       case "toggle-task":
         toggleTask(el.dataset.id);
         break;
+      case "open-task-detail":
+        openTaskForm(el.dataset.id);
+        break;
+      case "open-create-task-detail":
+        openCreateTaskForm(el.dataset.lane);
+        break;
+      case "save-task-form":
+        saveTaskForm();
+        break;
       case "edit-task":
         state.editingTask = el.dataset.id;
         render();
@@ -1605,6 +2074,7 @@
     if (e.key === "Escape" && state.modal) {
       state.modal = null;
       state.pendingImport = null;
+      state.taskForm = null;
       render();
     }
   });
