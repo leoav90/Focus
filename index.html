@@ -421,13 +421,28 @@
 (function () {
   "use strict";
 
+  var SCHEMA_VERSION = 1;
   var STORAGE_KEY = "projects-data-v1";
+  var CORRUPT_BACKUP_PREFIX = "projects-data-corrupt-backup-";
+  var SAVE_DELAY_MS = 300;
+  var VALIDATION_LIMITS = {
+    projectNameMin: 1,
+    projectNameMax: 80,
+    taskTextMin: 1,
+    taskTextMax: 300
+  };
+  var LANE_NAMES = {
+    urgente: "Urgente",
+    diaria: "Diaria",
+    semana: "Esta semana",
+    algun_dia: "Alg\u00fan d\u00eda"
+  };
 
   var LANES = [
-    { key: "urgente", label: "Urgente", accent: "#B5472B", icon: iconTriangle },
-    { key: "diaria", label: "Diaria", accent: "#9A7B1E", icon: iconSun },
-    { key: "semana", label: "Esta semana", accent: "#3C6E52", icon: iconCalendar },
-    { key: "algun_dia", label: "Algún día", accent: "#5B6470", icon: iconCloud }
+    { key: "urgente", label: LANE_NAMES.urgente, accent: "#B5472B", icon: iconTriangle },
+    { key: "diaria", label: LANE_NAMES.diaria, accent: "#9A7B1E", icon: iconSun },
+    { key: "semana", label: LANE_NAMES.semana, accent: "#3C6E52", icon: iconCalendar },
+    { key: "algun_dia", label: LANE_NAMES.algun_dia, accent: "#5B6470", icon: iconCloud }
   ];
 
   var PROJECT_COLORS = ["#B5472B", "#9A7B1E", "#3C6E52", "#3A5A8C", "#6B4C8A", "#5B6470"];
@@ -481,15 +496,33 @@
     editingTask: null,
     editingProjectName: false,
     confirmDeleteProject: false,
-    newProjectOpen: false
+    newProjectOpen: false,
+    storageWarning: null
   };
 
-  function uid() {
+  function generateId() {
     return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
   }
 
+  function deepClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function sanitizeText(value, maxLength) {
+    var text = String(value || "").trim();
+    if (typeof maxLength === "number" && maxLength > 0) {
+      text = text.slice(0, maxLength);
+    }
+    return text;
+  }
+
+  function showSaveStatus(message) {
+    var statusEl = document.getElementById("saveStatus");
+    if (statusEl) statusEl.textContent = message;
+  }
+
   function emptyProject(name, color) {
-    return { id: uid(), name: name, color: color, createdAt: Date.now(), tasks: [] };
+    return { id: generateId(), name: name, color: color, createdAt: Date.now(), tasks: [] };
   }
 
   function escapeHtml(str) {
@@ -500,41 +533,90 @@
 
   // ---------- persistence ----------
   var saveTimer = null;
-  function load() {
+
+  function getStorageData() {
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { data: null, corrupt: false };
+
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        var parsed = JSON.parse(raw);
-        state.projects = parsed.projects || [];
-        state.activeProjectId = parsed.activeProjectId || (state.projects[0] ? state.projects[0].id : null);
-        if (state.projects.length === 0) {
-          var p = emptyProject("Mi primer proyecto", PROJECT_COLORS[0]);
-          state.projects = [p];
-          state.activeProjectId = p.id;
-        }
-        return;
-      }
+      return { data: JSON.parse(raw), corrupt: false };
     } catch (e) {
-      console.error("Error cargando datos guardados:", e);
+      var backupKey = CORRUPT_BACKUP_PREFIX + Date.now();
+      try {
+        localStorage.setItem(backupKey, raw);
+      } catch (backupError) {
+        console.error("No se pudo guardar backup de datos corruptos:", backupError);
+      }
+      console.error("JSON inv\u00e1lido en localStorage:", e);
+      return { data: null, corrupt: true, backupKey: backupKey };
     }
-    var starter = emptyProject("Mi primer proyecto", PROJECT_COLORS[0]);
+  }
+
+  function setStorageData(data) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  function getInitialProject() {
+    return emptyProject("Mi primer proyecto", PROJECT_COLORS[0]);
+  }
+
+  function showStorageWarning(message) {
+    state.storageWarning = message;
+    renderStorageWarning();
+  }
+
+  function renderStorageWarning() {
+    var app = document.getElementById("app");
+    var existing = document.getElementById("storageWarning");
+    if (existing) existing.remove();
+    if (!app || !state.storageWarning) return;
+
+    var warning = document.createElement("div");
+    warning.className = "toast";
+    warning.id = "storageWarning";
+    warning.textContent = state.storageWarning;
+    app.insertBefore(warning, app.querySelector(".layout"));
+  }
+
+  function load() {
+    var storage = getStorageData();
+    if (storage.data) {
+      state.projects = Array.isArray(storage.data.projects) ? storage.data.projects : [];
+      state.activeProjectId = storage.data.activeProjectId || (state.projects[0] ? state.projects[0].id : null);
+      if (state.projects.length === 0) {
+        var p = getInitialProject();
+        state.projects = [p];
+        state.activeProjectId = p.id;
+      }
+      return;
+    }
+
+    var starter = getInitialProject();
     state.projects = [starter];
     state.activeProjectId = starter.id;
+
+    if (storage.corrupt) {
+      state.storageWarning = "No se pudieron leer los datos guardados. Se cre\u00f3 una copia de seguridad y se inici\u00f3 una versi\u00f3n segura.";
+      showSaveStatus("Datos seguros sin guardar");
+    }
   }
 
   function save() {
-    var statusEl = document.getElementById("saveStatus");
-    if (statusEl) statusEl.textContent = "Guardando…";
+    showSaveStatus("Guardando...");
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({ projects: state.projects, activeProjectId: state.activeProjectId }));
-        if (statusEl) statusEl.textContent = "Guardado";
+        setStorageData({
+          schemaVersion: SCHEMA_VERSION,
+          projects: state.projects,
+          activeProjectId: state.activeProjectId
+        });
+        showSaveStatus("Guardado");
       } catch (e) {
-        if (statusEl) statusEl.textContent = "Error al guardar";
+        showSaveStatus("Error al guardar");
         console.error("Error guardando:", e);
       }
-    }, 300);
+    }, SAVE_DELAY_MS);
   }
 
   function getActiveProject() {
@@ -548,7 +630,7 @@
   function updateProject(id, fn) {
     for (var i = 0; i < state.projects.length; i++) {
       if (state.projects[i].id === id) {
-        state.projects[i] = fn(state.projects[i]);
+        state.projects[i] = fn(deepClone(state.projects[i]));
         break;
       }
     }
@@ -558,8 +640,8 @@
 
   // ---------- actions ----------
   function addProject(name) {
-    var trimmed = (name || "").trim();
-    if (!trimmed) return;
+    var trimmed = sanitizeText(name, VALIDATION_LIMITS.projectNameMax);
+    if (trimmed.length < VALIDATION_LIMITS.projectNameMin) return;
     var color = PROJECT_COLORS[state.projects.length % PROJECT_COLORS.length];
     var p = emptyProject(trimmed, color);
     state.projects.push(p);
@@ -580,11 +662,11 @@
   }
 
   function addTask(lane, text) {
-    var trimmed = (text || "").trim();
+    var trimmed = sanitizeText(text, VALIDATION_LIMITS.taskTextMax);
     var active = getActiveProject();
-    if (!trimmed || !active) return;
+    if (trimmed.length < VALIDATION_LIMITS.taskTextMin || !active) return;
     updateProject(active.id, function (p) {
-      p.tasks.push({ id: uid(), text: trimmed, lane: lane, done: false, createdAt: Date.now() });
+      p.tasks.push({ id: generateId(), text: trimmed, lane: lane, done: false, createdAt: Date.now() });
       return p;
     });
     var input = document.querySelector('.add-task-row input[data-lane="' + lane + '"]');
@@ -625,10 +707,10 @@
   }
 
   function saveTaskEdit(taskId, text) {
-    var trimmed = (text || "").trim();
+    var trimmed = sanitizeText(text, VALIDATION_LIMITS.taskTextMax);
     var active = getActiveProject();
     state.editingTask = null;
-    if (!trimmed || !active) { render(); return; }
+    if (trimmed.length < VALIDATION_LIMITS.taskTextMin || !active) { render(); return; }
     updateProject(active.id, function (p) {
       p.tasks = p.tasks.map(function (t) {
         if (t.id === taskId) t.text = trimmed;
@@ -639,9 +721,9 @@
   }
 
   function renameProject(id, name) {
-    var trimmed = (name || "").trim();
+    var trimmed = sanitizeText(name, VALIDATION_LIMITS.projectNameMax);
     state.editingProjectName = false;
-    if (!trimmed) { render(); return; }
+    if (trimmed.length < VALIDATION_LIMITS.projectNameMin) { render(); return; }
     updateProject(id, function (p) { p.name = trimmed; return p; });
   }
 
@@ -649,6 +731,7 @@
   function render() {
     renderSidebar();
     renderMain();
+    renderStorageWarning();
   }
 
   function renderSidebar() {
@@ -696,7 +779,7 @@
     var active = getActiveProject();
 
     if (!active) {
-      main.innerHTML = '<div class="empty-state">Creá un proyecto para empezar.</div>';
+      main.innerHTML = '<div class="empty-state">Cre\u00e1 un proyecto para empezar.</div>';
       return;
     }
 
@@ -716,8 +799,8 @@
     html += '</div>';
 
     if (state.confirmDeleteProject) {
-      html += '<div class="confirm-delete"><span>¿Eliminar proyecto?</span>' +
-        '<button class="btn-sm danger" data-action="confirm-delete-project">Sí, eliminar</button>' +
+      html += '<div class="confirm-delete"><span>\u00bfEliminar proyecto?</span>' +
+        '<button class="btn-sm danger" data-action="confirm-delete-project">S\u00ed, eliminar</button>' +
         '<button class="btn-sm" data-action="cancel-delete-project">Cancelar</button></div>';
     } else {
       html += '<button class="icon-btn" data-action="open-delete-project" aria-label="Eliminar proyecto">' + iconTrash(14) + '</button>';
@@ -733,7 +816,7 @@
       var tasks = active.tasks.filter(function (t) { return t.lane === lane.key; });
       var collapsed = !!state.collapsedLanes[lane.key];
       var pending = tasks.filter(function (t) { return !t.done; }).length;
-      var statusText = pending > 0 ? (pending + ' pendiente' + (pending > 1 ? 's' : '')) : (tasks.length > 0 ? 'completas' : 'vacío');
+      var statusText = pending > 0 ? (pending + ' pendiente' + (pending > 1 ? 's' : '')) : (tasks.length > 0 ? 'completas' : 'vac\u00edo');
 
       html += '<div class="lane" data-lane="' + lane.key + '">' +
         '<button class="lane-header" data-action="toggle-lane" data-lane="' + lane.key + '">' +
@@ -746,7 +829,7 @@
       if (!collapsed) {
         html += '<div class="lane-body">';
         if (tasks.length === 0) {
-          html += '<p class="lane-empty">Sin tareas todavía.</p>';
+          html += '<p class="lane-empty">Sin tareas todav\u00eda.</p>';
         }
         html += '<div class="task-list">';
         tasks.forEach(function (task) {
@@ -769,7 +852,7 @@
         html += '</div>';
 
         html += '<div class="add-task-row">' +
-          '<input type="text" placeholder="Agregar tarea…" data-lane="' + lane.key + '" autocomplete="off">' +
+          '<input type="text" placeholder="Agregar tarea..." data-lane="' + lane.key + '" autocomplete="off">' +
           '<button data-action="add-task" data-lane="' + lane.key + '" aria-label="Agregar tarea">' + iconPlus(14) + '</button>' +
           '</div>';
 
