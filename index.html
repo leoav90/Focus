@@ -54,6 +54,25 @@
     font-weight: 600;
     margin: 0;
   }
+  .global-search {
+    flex: 1;
+    max-width: 360px;
+  }
+  .global-search input {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+  .global-search input:focus {
+    outline: none;
+    border-color: var(--border-strong);
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.04);
+  }
   .header-tools {
     display: flex;
     align-items: center;
@@ -429,6 +448,102 @@
   .task-pill.warning { border-color: #d7b23f; background: #fff8df; color: #765d0d; }
   .task-pill.danger { border-color: #e1a28f; background: var(--danger-bg); color: var(--danger); }
   .task-pill.success { border-color: #a8c9b3; background: #eef7f1; color: #2f6846; }
+  .task-note-toggle {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: #fbfaf8;
+    color: var(--text-2);
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 11px;
+    padding: 2px 7px;
+  }
+  .task-note-toggle:hover { background: var(--surface-2); color: var(--text); }
+  .task-note-body {
+    border-left: 2px solid var(--border-strong);
+    color: var(--text-2);
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 2px;
+    padding: 2px 0 2px 8px;
+    white-space: pre-wrap;
+  }
+  .subtask-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 4px;
+  }
+  .subtask-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-2);
+    font-size: 12px;
+  }
+  .subtask-row.done .subtask-text {
+    color: var(--text-3);
+    text-decoration: line-through;
+  }
+  .subtask-check {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+  .subtask-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .subtask-delete {
+    border: none;
+    background: transparent;
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 5px;
+    display: inline-flex;
+  }
+  .subtask-delete:hover { background: var(--surface-2); color: var(--text); }
+  .subtask-add {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .subtask-add input {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 5px 7px;
+  }
+  .subtask-add button {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+  .subtask-add button:hover { background: var(--surface-2); }
   .task-edit-input {
     font-size: 14px;
     flex: 1;
@@ -728,7 +843,8 @@
   .hidden-input { display: none; }
   @media (max-width: 640px) {
     body { padding: 12px; }
-    .header { align-items: flex-start; }
+    .header { align-items: stretch; flex-direction: column; }
+    .global-search { max-width: none; width: 100%; }
     .layout { flex-direction: column; }
     .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--border); flex-direction: row; overflow-x: auto; }
     .sidebar-label { display: none; }
@@ -753,6 +869,9 @@
     <div class="header-title">
       <h1>Mis proyectos</h1>
       <span class="sub" id="saveStatus">Guardado localmente</span>
+    </div>
+    <div class="global-search">
+      <input id="globalSearchInput" type="search" placeholder="Buscar tareas..." autocomplete="off">
     </div>
     <div class="header-tools" id="headerTools">
       <button class="icon-btn" data-action="toggle-settings" aria-label="Configuracion" title="Configuracion"></button>
@@ -876,15 +995,20 @@
   function iconInfo(size, color) {
     return svgWrap('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>', size, color);
   }
+  function iconNote(size, color) {
+    return svgWrap('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/>', size, color);
+  }
 
   // ---------- state ----------
   var state = {
     projects: [],
     activeProjectId: null,
     view: "project",
+    searchQuery: "",
     todayDate: null,
     collapsedTodaySections: {},
     collapsedLanes: {},
+    expandedNotes: {},
     editingTask: null,
     editingProjectName: false,
     confirmDeleteProject: false,
@@ -1060,6 +1184,24 @@
     return position;
   }
 
+  function normalizeSubtasks(subtasks) {
+    if (!Array.isArray(subtasks)) return [];
+    return subtasks.filter(function (item) {
+      return item && typeof item === "object" && !Array.isArray(item);
+    }).map(function (item) {
+      var now = Date.now();
+      return {
+        id: sanitizeText(item.id || generateId(), 120) || generateId(),
+        text: sanitizeText(item.text || "", VALIDATION_LIMITS.taskTextMax),
+        done: item.done === true,
+        createdAt: typeof item.createdAt === "number" ? item.createdAt : now,
+        updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : now
+      };
+    }).filter(function (item) {
+      return item.text.length >= VALIDATION_LIMITS.taskTextMin;
+    });
+  }
+
   function normalizeTask(task, taskIndex, projectTasks) {
     if (!task || typeof task !== "object" || Array.isArray(task)) {
       throw new Error("Hay una tarea con formato invalido.");
@@ -1092,6 +1234,7 @@
       estimateMinutes: estimate,
       taskType: normalizeTaskType(task.taskType),
       notes: sanitizeText(task.notes || "", VALIDATION_LIMITS.taskNotesMax),
+      subtasks: normalizeSubtasks(task.subtasks),
       externalUrl: typeof task.externalUrl === "string" ? task.externalUrl.trim() : "",
       position: getTaskPosition(projectTasks, lane, task, taskIndex),
       updatedAt: typeof task.updatedAt === "number" ? task.updatedAt : createdAt,
@@ -1556,6 +1699,7 @@
       estimateMinutes: null,
       taskType: "otro",
       notes: "",
+      subtasks: [],
       externalUrl: "",
       position: 0,
       updatedAt: now,
@@ -1588,6 +1732,52 @@
       t.status = nextDone ? "completada" : "pendiente";
       t.completedAt = nextDone ? (t.completedAt || now) : null;
       t.updatedAt = now;
+      return t;
+    });
+  }
+
+  function addSubtask(taskId, text, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    var trimmed = sanitizeText(text, VALIDATION_LIMITS.taskTextMax);
+    if (!project || trimmed.length < VALIDATION_LIMITS.taskTextMin) return;
+    updateTaskInProject(project.id, taskId, function (t) {
+      var now = Date.now();
+      t.subtasks = normalizeSubtasks(t.subtasks);
+      t.subtasks.push({
+        id: generateId(),
+        text: trimmed,
+        done: false,
+        createdAt: now,
+        updatedAt: now
+      });
+      t.updatedAt = now;
+      return t;
+    });
+  }
+
+  function toggleSubtask(taskId, subtaskId, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    if (!project) return;
+    updateTaskInProject(project.id, taskId, function (t) {
+      var now = Date.now();
+      t.subtasks = normalizeSubtasks(t.subtasks).map(function (item) {
+        if (item.id === subtaskId) {
+          item.done = !item.done;
+          item.updatedAt = now;
+        }
+        return item;
+      });
+      t.updatedAt = now;
+      return t;
+    });
+  }
+
+  function deleteSubtask(taskId, subtaskId, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    if (!project) return;
+    updateTaskInProject(project.id, taskId, function (t) {
+      t.subtasks = normalizeSubtasks(t.subtasks).filter(function (item) { return item.id !== subtaskId; });
+      t.updatedAt = Date.now();
       return t;
     });
   }
@@ -1785,6 +1975,8 @@
   }
 
   function renderHeader() {
+    var searchInput = document.getElementById("globalSearchInput");
+    if (searchInput && searchInput.value !== state.searchQuery) searchInput.value = state.searchQuery;
     var tools = document.getElementById("headerTools");
     if (!tools) return;
     var html = '<button class="icon-btn" data-action="toggle-settings" aria-label="Configuracion" title="Configuracion">' + iconGear(17) + '</button>';
@@ -1858,6 +2050,40 @@
     }).join("") + '</div>';
   }
 
+  function subtasksHtml(task, projectId) {
+    var subtasks = normalizeSubtasks(task.subtasks);
+    var projectAttr = projectId ? ' data-project-id="' + projectId + '"' : '';
+    var html = '<div class="subtask-list">';
+    subtasks.forEach(function (item) {
+      html += '<div class="subtask-row' + (item.done ? ' done' : '') + '">' +
+        '<button class="subtask-check" data-action="toggle-subtask" data-id="' + task.id + '" data-subtask-id="' + item.id + '"' + projectAttr + ' aria-label="' + (item.done ? 'Reabrir subtarea' : 'Completar subtarea') + '">' +
+        (item.done ? iconCheck(10, "currentColor") : '') +
+        '</button>' +
+        '<span class="subtask-text">' + escapeHtml(item.text) + '</span>' +
+        '<button class="subtask-delete" data-action="delete-subtask" data-id="' + task.id + '" data-subtask-id="' + item.id + '"' + projectAttr + ' aria-label="Eliminar subtarea">' + iconX(11) + '</button>' +
+        '</div>';
+    });
+    html += '<div class="subtask-add">' +
+      '<input class="subtask-add-input" type="text" placeholder="Agregar subtarea..." data-task-id="' + task.id + '"' + projectAttr + ' autocomplete="off">' +
+      '<button data-action="add-subtask" data-id="' + task.id + '"' + projectAttr + '>Agregar</button>' +
+      '</div>' +
+      '</div>';
+    return html;
+  }
+
+  function taskNoteHtml(task, projectId) {
+    var note = sanitizeText(task.notes || "", VALIDATION_LIMITS.taskNotesMax);
+    if (!note) return "";
+    var key = (projectId || state.activeProjectId || "project") + ":" + task.id;
+    var expanded = !!state.expandedNotes[key];
+    return '<button class="task-note-toggle" data-action="toggle-task-note" data-note-key="' + key + '" aria-expanded="' + (expanded ? 'true' : 'false') + '">' +
+      iconNote(12) +
+      '<span>Nota</span>' +
+      '<span class="chev">' + (expanded ? iconChevronDown(12) : iconChevronRight(12)) + '</span>' +
+      '</button>' +
+      (expanded ? '<div class="task-note-body">' + escapeHtml(note) + '</div>' : '');
+  }
+
   function projectChipHtml(project) {
     return '<span class="project-chip"><span class="dot" style="background:' + project.color + '"></span><span>' + escapeHtml(project.name) + '</span></span>';
   }
@@ -1887,6 +2113,31 @@
       });
     });
     return rows;
+  }
+
+  function searchMatchesTask(task, query) {
+    var haystack = [
+      task.text || "",
+      task.notes || "",
+      optionLabel(TASK_STATUSES, task.status),
+      optionLabel(TASK_PRIORITIES, task.priority),
+      optionLabel(TASK_TYPES, task.taskType)
+    ].concat(normalizeSubtasks(task.subtasks).map(function (item) { return item.text; })).join(" ").toLowerCase();
+    return haystack.indexOf(query.toLowerCase()) !== -1;
+  }
+
+  function searchResults() {
+    var query = sanitizeText(state.searchQuery || "", 120);
+    if (!query) return [];
+    return collectGlobalTasks().filter(function (row) {
+      return searchMatchesTask(row.task, query);
+    }).sort(function (a, b) {
+      var projectDiff = a.project.name.localeCompare(b.project.name);
+      if (projectDiff !== 0) return projectDiff;
+      var laneDiff = normalizeLane(a.task.lane).localeCompare(normalizeLane(b.task.lane));
+      if (laneDiff !== 0) return laneDiff;
+      return (a.task.position || 0) - (b.task.position || 0);
+    });
   }
 
   function classifyTodayTasks() {
@@ -2093,6 +2344,8 @@
       projectChipHtml(project) +
       '<span class="task-text' + (taskDone ? ' done' : '') + '">' + escapeHtml(task.text) + '</span>' +
       taskMetaHtml(task, state.todayDate) +
+      taskNoteHtml(task, project.id) +
+      subtasksHtml(task, project.id) +
       '</div>' +
       '<select class="lane-select" data-action="move-task-lane" data-id="' + task.id + '" data-project-id="' + project.id + '" aria-label="Mover a otro carril">' +
       LANES.map(function (lane) { return '<option value="' + lane.key + '"' + (lane.key === task.lane ? ' selected' : '') + '>' + escapeHtml(lane.label) + '</option>'; }).join("") +
@@ -2189,8 +2442,30 @@
     }
   }
 
+  function renderSearchView(main) {
+    var query = sanitizeText(state.searchQuery || "", 120);
+    var rows = searchResults();
+    var html = '<div class="project-header">' +
+      '<div class="project-header-left">' +
+      '<h1 class="project-title">Busqueda</h1>' +
+      '</div>' +
+      '<button class="btn-sm" data-action="clear-search">Limpiar</button>' +
+      '</div>' +
+      '<p class="progress-label">' + rows.length + ' resultado' + (rows.length === 1 ? '' : 's') + ' para "' + escapeHtml(query) + '"</p>';
+    if (rows.length === 0) {
+      html += '<p class="lane-empty">No hay tareas que coincidan con la busqueda.</p>';
+    } else {
+      html += '<div class="task-list">' + rows.map(todayTaskRowHtml).join("") + '</div>';
+    }
+    main.innerHTML = html;
+  }
+
   function renderMain() {
     var main = document.getElementById("main");
+    if (sanitizeText(state.searchQuery || "", 120)) {
+      renderSearchView(main);
+      return;
+    }
     if (state.view === "today") {
       renderTodayView(main);
       return;
@@ -2268,6 +2543,8 @@
             html += '<div class="task-content">' +
               '<span class="task-text' + (taskDone ? ' done' : '') + '" data-action="edit-task" data-id="' + task.id + '">' + escapeHtml(task.text) + '</span>' +
               taskMetaHtml(task) +
+              taskNoteHtml(task, active.id) +
+              subtasksHtml(task) +
               '</div>';
           }
 
@@ -2321,6 +2598,12 @@
     main.querySelectorAll('.add-task-row input').forEach(function (input) {
       input.addEventListener("keydown", function (e) {
         if (e.key === "Enter") addTask(input.dataset.lane, input.value);
+      });
+    });
+
+    main.querySelectorAll('.subtask-add-input').forEach(function (input) {
+      input.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") addSubtask(input.dataset.taskId, input.value, input.dataset.projectId);
       });
     });
 
@@ -2404,6 +2687,7 @@
         applyPendingRestore();
         break;
       case "select-today":
+        state.searchQuery = "";
         state.view = "today";
         state.confirmDeleteProject = false;
         state.editingProjectName = false;
@@ -2412,6 +2696,7 @@
         render();
         break;
       case "select-project":
+        state.searchQuery = "";
         state.view = "project";
         state.activeProjectId = el.dataset.id;
         state.confirmDeleteProject = false;
@@ -2420,6 +2705,7 @@
         render();
         break;
       case "open-source-project":
+        state.searchQuery = "";
         state.view = "project";
         state.activeProjectId = el.dataset.projectId;
         state.confirmDeleteProject = false;
@@ -2433,6 +2719,10 @@
         break;
       case "go-real-today":
         state.todayDate = dateToInputValue(new Date());
+        render();
+        break;
+      case "clear-search":
+        state.searchQuery = "";
         render();
         break;
       case "open-new-project":
@@ -2471,6 +2761,20 @@
       case "toggle-task":
         toggleTask(el.dataset.id, el.dataset.projectId);
         break;
+      case "toggle-subtask":
+        toggleSubtask(el.dataset.id, el.dataset.subtaskId, el.dataset.projectId);
+        break;
+      case "toggle-task-note":
+        state.expandedNotes[el.dataset.noteKey] = !state.expandedNotes[el.dataset.noteKey];
+        render();
+        break;
+      case "delete-subtask":
+        deleteSubtask(el.dataset.id, el.dataset.subtaskId, el.dataset.projectId);
+        break;
+      case "add-subtask":
+        var subtaskInput = el.parentElement ? el.parentElement.querySelector(".subtask-add-input") : null;
+        addSubtask(el.dataset.id, subtaskInput ? subtaskInput.value : "", el.dataset.projectId);
+        break;
       case "open-task-detail":
         openTaskForm(el.dataset.id, el.dataset.projectId);
         break;
@@ -2499,6 +2803,13 @@
     if (!el) return;
     if (el.dataset.action === "move-task-lane") {
       moveTask(el.dataset.id, el.value, el.dataset.projectId);
+    }
+  });
+
+  document.addEventListener("input", function (e) {
+    if (e.target && e.target.id === "globalSearchInput") {
+      state.searchQuery = e.target.value;
+      renderMain();
     }
   });
 
