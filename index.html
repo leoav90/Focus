@@ -416,6 +416,104 @@
     align-items: center;
   }
   .task-action-btn:hover { background: var(--border); color: var(--text); }
+  .today-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 8px 0 16px;
+    flex-wrap: wrap;
+  }
+  .today-date {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .today-date input {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 7px 9px;
+    font-family: var(--font);
+    color: var(--text);
+    background: var(--surface);
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    margin: 8px 0 16px;
+  }
+  .summary-item {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 10px;
+    background: var(--surface);
+  }
+  .summary-item .value {
+    display: block;
+    font-size: 19px;
+    font-weight: 600;
+  }
+  .summary-item .label {
+    display: block;
+    margin-top: 2px;
+    color: var(--text-2);
+    font-size: 11px;
+  }
+  .today-section {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 10px;
+  }
+  .today-task-row {
+    cursor: default;
+  }
+  .project-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: var(--text-2);
+    font-size: 12px;
+    margin-bottom: 1px;
+  }
+  .project-chip .dot {
+    width: 7px;
+    height: 7px;
+  }
+  .lane-select {
+    max-width: 132px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    padding: 5px 7px;
+  }
+  .project-progress-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .project-progress-item {
+    display: grid;
+    grid-template-columns: minmax(110px, 1fr) 2fr auto;
+    gap: 10px;
+    align-items: center;
+    font-size: 13px;
+  }
+  .project-progress-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .project-progress-name span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .add-task-row {
     display: flex;
     gap: 6px;
@@ -577,6 +675,8 @@
     .sidebar-label { display: none; }
     .main { padding: 16px; }
     .task-form { grid-template-columns: 1fr; }
+    .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .project-progress-item { grid-template-columns: 1fr; }
   }
   svg { display: block; }
 </style>
@@ -715,6 +815,9 @@
   var state = {
     projects: [],
     activeProjectId: null,
+    view: "project",
+    todayDate: null,
+    collapsedTodaySections: {},
     collapsedLanes: {},
     editingTask: null,
     editingProjectName: false,
@@ -796,6 +899,13 @@
     return isNaN(parsed) ? null : new Date(parsed).toISOString();
   }
 
+  function dateToInputValue(date) {
+    var d = date || new Date();
+    var month = String(d.getMonth() + 1).padStart(2, "0");
+    var day = String(d.getDate()).padStart(2, "0");
+    return d.getFullYear() + "-" + month + "-" + day;
+  }
+
   function optionExists(options, value) {
     return options.some(function (item) { return item.value === value; });
   }
@@ -851,6 +961,20 @@
     var d = parseDateOnly(value);
     if (!d) return null;
     return Math.round((d.getTime() - todayDateOnly().getTime()) / 86400000);
+  }
+
+  function dateOnlyFromTimestamp(value) {
+    if (!value) return null;
+    var d = new Date(value);
+    if (isNaN(d.getTime())) return null;
+    return dateToInputValue(d);
+  }
+
+  function compareDateOnly(a, b) {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b);
   }
 
   function normalizeLane(value) {
@@ -1101,6 +1225,13 @@
     return found || state.projects[0] || null;
   }
 
+  function getProjectById(projectId) {
+    for (var i = 0; i < state.projects.length; i++) {
+      if (state.projects[i].id === projectId) return state.projects[i];
+    }
+    return null;
+  }
+
   function updateProject(id, fn) {
     for (var i = 0; i < state.projects.length; i++) {
       if (state.projects[i].id === id) {
@@ -1110,6 +1241,16 @@
     }
     save();
     render();
+  }
+
+  function updateTaskInProject(projectId, taskId, fn) {
+    updateProject(projectId, function (p) {
+      p.tasks = p.tasks.map(function (t) {
+        if (t.id === taskId) return fn(t, p);
+        return t;
+      });
+      return p;
+    });
   }
 
   // ---------- backup and import ----------
@@ -1312,6 +1453,7 @@
     var p = emptyProject(trimmed, color);
     state.projects.push(p);
     state.activeProjectId = p.id;
+    state.view = "project";
     state.newProjectOpen = false;
     save();
     render();
@@ -1370,22 +1512,17 @@
     if (input) input.value = "";
   }
 
-  function toggleTask(taskId) {
-    var active = getActiveProject();
-    if (!active) return;
-    updateProject(active.id, function (p) {
-      p.tasks = p.tasks.map(function (t) {
-        if (t.id === taskId) {
-          var now = Date.now();
-          var nextDone = !isTaskCompleted(t);
-          t.done = nextDone;
-          t.status = nextDone ? "completada" : "pendiente";
-          t.completedAt = nextDone ? (t.completedAt || now) : null;
-          t.updatedAt = now;
-        }
-        return t;
-      });
-      return p;
+  function toggleTask(taskId, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    if (!project) return;
+    updateTaskInProject(project.id, taskId, function (t) {
+      var now = Date.now();
+      var nextDone = !isTaskCompleted(t);
+      t.done = nextDone;
+      t.status = nextDone ? "completada" : "pendiente";
+      t.completedAt = nextDone ? (t.completedAt || now) : null;
+      t.updatedAt = now;
+      return t;
     });
   }
 
@@ -1404,10 +1541,10 @@
     });
   }
 
-  function moveTask(taskId, newLane) {
-    var active = getActiveProject();
-    if (!active) return;
-    updateProject(active.id, function (p) {
+  function moveTask(taskId, newLane, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    if (!project) return;
+    updateProject(project.id, function (p) {
       p.tasks = p.tasks.map(function (t) {
         if (t.id === taskId) {
           t.lane = newLane;
@@ -1437,19 +1574,20 @@
     });
   }
 
-  function findTask(taskId) {
-    var active = getActiveProject();
-    if (!active) return null;
-    for (var i = 0; i < active.tasks.length; i++) {
-      if (active.tasks[i].id === taskId && !isTaskDeleted(active.tasks[i])) return active.tasks[i];
+  function findTask(taskId, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    if (!project) return null;
+    for (var i = 0; i < project.tasks.length; i++) {
+      if (project.tasks[i].id === taskId && !isTaskDeleted(project.tasks[i])) return project.tasks[i];
     }
     return null;
   }
 
-  function openTaskForm(taskId) {
-    var task = findTask(taskId);
+  function openTaskForm(taskId, projectId) {
+    var project = projectId ? getProjectById(projectId) : getActiveProject();
+    var task = project ? findTask(taskId, project.id) : null;
     if (!task) return;
-    state.taskForm = { mode: "edit", taskId: taskId, error: null };
+    state.taskForm = { mode: "edit", taskId: taskId, projectId: project.id, error: null };
     state.modal = { type: "task-form" };
     render();
   }
@@ -1509,7 +1647,7 @@
 
   function saveTaskForm() {
     if (!state.taskForm) return;
-    var active = getActiveProject();
+    var active = state.taskForm.projectId ? getProjectById(state.taskForm.projectId) : getActiveProject();
     if (!active) return;
     var taskId = state.taskForm.taskId;
     var mode = state.taskForm.mode;
@@ -1610,19 +1748,22 @@
     return d.toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit" });
   }
 
-  function taskDueKind(task) {
+  function taskDueKind(task, referenceDate) {
     if (!task.dueDate || isTaskCompleted(task)) return "";
-    var diff = daysUntil(task.dueDate);
-    if (diff === null) return "";
-    if (diff < 0) return "overdue";
-    if (diff === 0) return "due-today";
+    var ref = referenceDate || dateToInputValue(todayDateOnly());
+    if (task.dueDate < ref) return "overdue";
+    if (task.dueDate === ref) return "due-today";
+    var refDate = parseDateOnly(ref);
+    var dueDate = parseDateOnly(task.dueDate);
+    if (!refDate || !dueDate) return "";
+    var diff = Math.round((dueDate.getTime() - refDate.getTime()) / 86400000);
     if (diff === 1) return "due-tomorrow";
     return "";
   }
 
-  function taskVisualClasses(task) {
+  function taskVisualClasses(task, referenceDate) {
     var classes = [];
-    var dueKind = taskDueKind(task);
+    var dueKind = taskDueKind(task, referenceDate);
     if (dueKind) classes.push(dueKind);
     if (task.status === "bloqueada" && !isTaskCompleted(task)) classes.push("blocked");
     if (task.priority === "alta" && !isTaskCompleted(task)) classes.push("high-priority");
@@ -1630,9 +1771,9 @@
     return classes.join(" ");
   }
 
-  function taskMetaHtml(task) {
+  function taskMetaHtml(task, referenceDate) {
     var meta = [];
-    var dueKind = taskDueKind(task);
+    var dueKind = taskDueKind(task, referenceDate);
     if (task.priority) {
       meta.push({ text: "Prioridad " + optionLabel(TASK_PRIORITIES, task.priority), cls: task.priority === "alta" ? "danger" : "" });
     }
@@ -1651,6 +1792,71 @@
     }).join("") + '</div>';
   }
 
+  function projectChipHtml(project) {
+    return '<span class="project-chip"><span class="dot" style="background:' + project.color + '"></span><span>' + escapeHtml(project.name) + '</span></span>';
+  }
+
+  function priorityRank(priority) {
+    if (priority === "alta") return 0;
+    if (priority === "media") return 1;
+    return 2;
+  }
+
+  function todaySort(a, b) {
+    var overdueA = a.task.dueDate && a.task.dueDate < state.todayDate && !isTaskCompleted(a.task) ? 0 : 1;
+    var overdueB = b.task.dueDate && b.task.dueDate < state.todayDate && !isTaskCompleted(b.task) ? 0 : 1;
+    if (overdueA !== overdueB) return overdueA - overdueB;
+    var priorityDiff = priorityRank(a.task.priority) - priorityRank(b.task.priority);
+    if (priorityDiff !== 0) return priorityDiff;
+    var dateDiff = compareDateOnly(a.task.dueDate, b.task.dueDate);
+    if (dateDiff !== 0) return dateDiff;
+    return (a.task.position || 0) - (b.task.position || 0);
+  }
+
+  function collectGlobalTasks() {
+    var rows = [];
+    state.projects.forEach(function (project) {
+      project.tasks.filter(function (task) { return !isTaskDeleted(task); }).forEach(function (task) {
+        rows.push({ project: project, task: task });
+      });
+    });
+    return rows;
+  }
+
+  function classifyTodayTasks() {
+    var selected = state.todayDate;
+    var rows = collectGlobalTasks();
+    var activeRows = rows.filter(function (row) { return !isTaskCompleted(row.task); });
+    var completedToday = rows.filter(function (row) { return isTaskCompleted(row.task) && dateOnlyFromTimestamp(row.task.completedAt) === selected; });
+    var sections = {
+      overdue: activeRows.filter(function (row) { return row.task.dueDate && row.task.dueDate < selected; }),
+      today: activeRows.filter(function (row) { return row.task.dueDate === selected || row.task.scheduledDate === selected; }),
+      urgent: activeRows.filter(function (row) { return row.task.lane === "urgente" || row.task.priority === "alta"; }),
+      blocked: activeRows.filter(function (row) { return row.task.status === "bloqueada"; }),
+      upcoming: activeRows.filter(function (row) { return row.task.dueDate && row.task.dueDate > selected; })
+    };
+    Object.keys(sections).forEach(function (key) { sections[key].sort(todaySort); });
+
+    var dailyIds = {};
+    sections.today.forEach(function (row) { dailyIds[row.project.id + ":" + row.task.id] = true; });
+    completedToday.forEach(function (row) { dailyIds[row.project.id + ":" + row.task.id] = true; });
+    var dailyTotal = Object.keys(dailyIds).length;
+    var dailyPct = dailyTotal ? Math.round((completedToday.length / dailyTotal) * 100) : 0;
+
+    return {
+      rows: rows,
+      completedToday: completedToday,
+      sections: sections,
+      summary: {
+        overdue: sections.overdue.length,
+        today: sections.today.length,
+        blocked: sections.blocked.length,
+        completedToday: completedToday.length,
+        dailyPct: dailyPct
+      }
+    };
+  }
+
   function optionsHtml(options, selected) {
     return options.map(function (item) {
       return '<option value="' + item.value + '"' + (item.value === selected ? ' selected' : '') + '>' + escapeHtml(item.label) + '</option>';
@@ -1659,7 +1865,7 @@
 
   function renderTaskFormHtml() {
     var isCreate = state.taskForm && state.taskForm.mode === "create";
-    var task = isCreate ? newTask("", state.taskForm.lane) : (state.taskForm ? findTask(state.taskForm.taskId) : null);
+    var task = isCreate ? newTask("", state.taskForm.lane) : (state.taskForm ? findTask(state.taskForm.taskId, state.taskForm.projectId) : null);
     if (!task) return '<h2>Tarea no disponible</h2><p>No se pudo encontrar la tarea seleccionada.</p><div class="modal-actions"><button class="btn-sm" data-action="close-modal">Cerrar</button></div>';
     return '<h2>' + (isCreate ? 'Crear tarea' : 'Editar detalle') + '</h2>' +
       '<p>Los cambios se guardan localmente y mantienen compatibilidad con el modelo anterior.</p>' +
@@ -1757,12 +1963,16 @@
   function renderSidebar() {
     var sidebar = document.getElementById("sidebar");
     var html = '<div class="sidebar-label">Proyectos</div>';
+    html += '<button class="project-item' + (state.view === "today" ? ' active' : '') + '" data-action="select-today">' +
+      '<span class="dot" style="background:#232220"></span>' +
+      '<span class="name">Hoy</span>' +
+      '</button>';
 
     state.projects.forEach(function (p) {
       var visibleTasks = p.tasks.filter(function (t) { return !isTaskDeleted(t); });
       var total = visibleTasks.length;
       var done = visibleTasks.filter(isTaskCompleted).length;
-      var isActive = p.id === state.activeProjectId;
+      var isActive = state.view === "project" && p.id === state.activeProjectId;
       html += '<button class="project-item' + (isActive ? ' active' : '') + '" data-action="select-project" data-id="' + p.id + '">' +
         '<span class="dot" style="background:' + p.color + '"></span>' +
         '<span class="name">' + escapeHtml(p.name) + '</span>' +
@@ -1795,8 +2005,130 @@
     }
   }
 
+  function renderSummaryCard(summary) {
+    return '<div class="summary-grid">' +
+      '<div class="summary-item"><span class="value">' + summary.overdue + '</span><span class="label">Vencidas</span></div>' +
+      '<div class="summary-item"><span class="value">' + summary.today + '</span><span class="label">Para hoy</span></div>' +
+      '<div class="summary-item"><span class="value">' + summary.blocked + '</span><span class="label">Bloqueadas</span></div>' +
+      '<div class="summary-item"><span class="value">' + summary.completedToday + '</span><span class="label">Completadas hoy</span></div>' +
+      '<div class="summary-item"><span class="value">' + summary.dailyPct + '%</span><span class="label">Avance diario</span></div>' +
+      '</div>';
+  }
+
+  function todayTaskRowHtml(row) {
+    var task = row.task;
+    var project = row.project;
+    var taskDone = isTaskCompleted(task);
+    return '<div class="task-row today-task-row ' + taskVisualClasses(task, state.todayDate) + '">' +
+      '<button class="checkbox" data-action="toggle-task" data-id="' + task.id + '" data-project-id="' + project.id + '" style="border-color:' + (taskDone ? project.color : '') + ';background:' + (taskDone ? project.color : 'transparent') + '" aria-label="' + (taskDone ? 'Reabrir tarea' : 'Completar tarea') + '">' +
+      (taskDone ? iconCheck(11, "white") : '') +
+      '</button>' +
+      '<div class="task-content">' +
+      projectChipHtml(project) +
+      '<span class="task-text' + (taskDone ? ' done' : '') + '">' + escapeHtml(task.text) + '</span>' +
+      taskMetaHtml(task, state.todayDate) +
+      '</div>' +
+      '<select class="lane-select" data-action="move-task-lane" data-id="' + task.id + '" data-project-id="' + project.id + '" aria-label="Mover a otro carril">' +
+      LANES.map(function (lane) { return '<option value="' + lane.key + '"' + (lane.key === task.lane ? ' selected' : '') + '>' + escapeHtml(lane.label) + '</option>'; }).join("") +
+      '</select>' +
+      '<button class="task-action-btn" data-action="open-task-detail" data-id="' + task.id + '" data-project-id="' + project.id + '" aria-label="Editar detalle" title="Editar detalle">' + iconInfo(13) + '</button>' +
+      '<button class="task-action-btn" data-action="open-source-project" data-project-id="' + project.id + '" aria-label="Abrir proyecto origen" title="Abrir proyecto origen">' + iconChevronRight(13) + '</button>' +
+      '</div>';
+  }
+
+  function todaySectionHtml(key, title, rows, emptyText) {
+    var collapsed = !!state.collapsedTodaySections[key];
+    var html = '<div class="today-section">' +
+      '<button class="lane-header" data-action="toggle-today-section" data-section="' + key + '">' +
+      '<span class="chev">' + (collapsed ? iconChevronRight(14) : iconChevronDown(14)) + '</span>' +
+      '<span class="lane-name">' + title + '</span>' +
+      '<span class="lane-status">' + rows.length + '</span>' +
+      '</button>';
+    if (!collapsed) {
+      html += '<div class="lane-body">';
+      if (rows.length === 0) {
+        html += '<p class="lane-empty">' + escapeHtml(emptyText) + '</p>';
+      } else {
+        html += '<div class="task-list">' + rows.map(todayTaskRowHtml).join("") + '</div>';
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function projectProgressHtml(rows) {
+    var byProject = {};
+    state.projects.forEach(function (project) {
+      byProject[project.id] = { project: project, total: 0, done: 0 };
+    });
+    rows.forEach(function (row) {
+      if (!byProject[row.project.id]) byProject[row.project.id] = { project: row.project, total: 0, done: 0 };
+      byProject[row.project.id].total++;
+      if (isTaskCompleted(row.task)) byProject[row.project.id].done++;
+    });
+    var items = Object.keys(byProject).map(function (id) { return byProject[id]; }).filter(function (item) { return item.total > 0; });
+    if (items.length === 0) return '<p class="lane-empty">No hay tareas para mostrar progreso.</p>';
+    items.sort(function (a, b) { return a.project.name.localeCompare(b.project.name); });
+    return '<div class="project-progress-list">' + items.map(function (item) {
+      var pct = item.total ? Math.round((item.done / item.total) * 100) : 0;
+      return '<div class="project-progress-item">' +
+        '<div class="project-progress-name"><span class="dot" style="background:' + item.project.color + '"></span><span>' + escapeHtml(item.project.name) + '</span></div>' +
+        '<div class="progress-track"><div class="progress-fill" style="width:' + pct + '%;background:' + item.project.color + '"></div></div>' +
+        '<span class="progress-label">' + item.done + '/' + item.total + '</span>' +
+        '</div>';
+    }).join("") + '</div>';
+  }
+
+  function renderTodayView(main) {
+    if (!state.todayDate) state.todayDate = dateToInputValue(new Date());
+    var data = classifyTodayTasks();
+    var today = dateToInputValue(new Date());
+    var html = '<div class="project-header">' +
+      '<div class="project-header-left">' +
+      '<h1 class="project-title">Focus de hoy</h1>' +
+      '</div>' +
+      '</div>' +
+      '<div class="today-controls">' +
+      '<div class="today-date">' +
+      '<input type="date" id="todayDateInput" value="' + escapeHtml(state.todayDate) + '">' +
+      '<button class="btn-sm" data-action="go-real-today"' + (state.todayDate === today ? ' disabled' : '') + '>Volver a hoy</button>' +
+      '</div>' +
+      '<span class="progress-label">Vista global, sin cambiar la planificaci\u00f3n de tareas</span>' +
+      '</div>' +
+      renderSummaryCard(data.summary) +
+      todaySectionHtml("overdue", "Vencidas", data.sections.overdue, "No hay tareas vencidas.") +
+      todaySectionHtml("today", "Para hoy", data.sections.today, "No hay tareas planificadas o con vencimiento para esta fecha.") +
+      todaySectionHtml("urgent", "Urgentes", data.sections.urgent, "No hay tareas urgentes.") +
+      todaySectionHtml("blocked", "Bloqueadas", data.sections.blocked, "No hay tareas bloqueadas.") +
+      todaySectionHtml("upcoming", "Pr\u00f3ximos vencimientos", data.sections.upcoming, "No hay pr\u00f3ximos vencimientos.") +
+      '<div class="today-section">' +
+      '<button class="lane-header" data-action="toggle-today-section" data-section="progress">' +
+      '<span class="chev">' + (state.collapsedTodaySections.progress ? iconChevronRight(14) : iconChevronDown(14)) + '</span>' +
+      '<span class="lane-name">Progreso por proyecto</span>' +
+      '<span class="lane-status">' + state.projects.length + '</span>' +
+      '</button>' +
+      (state.collapsedTodaySections.progress ? '' : '<div class="lane-body">' + projectProgressHtml(data.rows) + '</div>') +
+      '</div>';
+    main.innerHTML = html;
+
+    var input = document.getElementById("todayDateInput");
+    if (input) {
+      input.addEventListener("change", function () {
+        if (normalizeDateOnly(input.value)) {
+          state.todayDate = input.value;
+          render();
+        }
+      });
+    }
+  }
+
   function renderMain() {
     var main = document.getElementById("main");
+    if (state.view === "today") {
+      renderTodayView(main);
+      return;
+    }
     var active = getActiveProject();
 
     if (!active) {
@@ -2005,10 +2337,36 @@
       case "confirm-restore-local":
         applyPendingRestore();
         break;
+      case "select-today":
+        state.view = "today";
+        state.confirmDeleteProject = false;
+        state.editingProjectName = false;
+        state.editingTask = null;
+        if (!state.todayDate) state.todayDate = dateToInputValue(new Date());
+        render();
+        break;
       case "select-project":
+        state.view = "project";
         state.activeProjectId = el.dataset.id;
         state.confirmDeleteProject = false;
         state.editingProjectName = false;
+        state.editingTask = null;
+        render();
+        break;
+      case "open-source-project":
+        state.view = "project";
+        state.activeProjectId = el.dataset.projectId;
+        state.confirmDeleteProject = false;
+        state.editingProjectName = false;
+        state.editingTask = null;
+        render();
+        break;
+      case "toggle-today-section":
+        state.collapsedTodaySections[el.dataset.section] = !state.collapsedTodaySections[el.dataset.section];
+        render();
+        break;
+      case "go-real-today":
+        state.todayDate = dateToInputValue(new Date());
         render();
         break;
       case "open-new-project":
@@ -2045,10 +2403,10 @@
         render();
         break;
       case "toggle-task":
-        toggleTask(el.dataset.id);
+        toggleTask(el.dataset.id, el.dataset.projectId);
         break;
       case "open-task-detail":
-        openTaskForm(el.dataset.id);
+        openTaskForm(el.dataset.id, el.dataset.projectId);
         break;
       case "open-create-task-detail":
         openCreateTaskForm(el.dataset.lane);
@@ -2067,6 +2425,14 @@
         var taskInput = document.querySelector('.add-task-row input[data-lane="' + el.dataset.lane + '"]');
         addTask(el.dataset.lane, taskInput ? taskInput.value : "");
         break;
+    }
+  });
+
+  document.addEventListener("change", function (e) {
+    var el = e.target.closest("[data-action]");
+    if (!el) return;
+    if (el.dataset.action === "move-task-lane") {
+      moveTask(el.dataset.id, el.value, el.dataset.projectId);
     }
   });
 
